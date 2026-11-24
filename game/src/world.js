@@ -1,145 +1,183 @@
-// The city of Solmara: a street grid, blocks, buildings, trees and props, all grown
-// from one seed so the map is identical on every load. Also answers road queries
-// the traffic, pedestrians and police all use.
-import { WORLD, ROAD_W, STREET_GAP, FIRST_STREET, DISTRICTS } from './config.js';
-import { createRandom } from './random.js';
+// Solmara — the city itself: roads, blocks, buildings, trees, beach and landmarks.
+// buildCity(seed) returns a plain data object; nothing here draws anything, and nothing
+// here moves. The renderer draws from it, the cars drive on its roads, and the collision
+// helpers in this file answer "is this point inside a building?" for everyone else.
 
-export function streetPositions() {
-  const list = [];
-  for (let p = FIRST_STREET; p < WORLD; p += STREET_GAP) list.push(p);
-  return list;
+import { WORLD, DISTRICTS, LANDMARKS } from './config.js';
+import { makeRng, rngRange, rngInt, rngPick, rngChance } from './random.js';
+
+const BUILDING_PALETTE = [
+  '#8a6f4d', '#6f7d8a', '#9a8a72', '#7a5a4a', '#5a6a7a', '#a88a5a', '#6a5a72', '#8a7a5a',
+];
+const ROOF_PALETTE = ['#4a3f35', '#3a4a5a', '#5a4a3a', '#2f3a45'];
+
+function roadAt(x, y) {
+  const half = WORLD.roadWidth / 2;
+  for (const rx of WORLD.roadsX) if (Math.abs(x - rx) < half) return true;
+  for (const ry of WORLD.roadsY) if (Math.abs(y - ry) < half) return true;
+  return false;
+}
+
+// The block rectangles between the roads: each block is one cell of the grid, inset by
+// half a road width on every side so buildings never touch the tarmac.
+export function blockRects() {
+  const xs = [WORLD.beachEdge, ...WORLD.roadsX, WORLD.width];
+  const ys = [0, ...WORLD.roadsY, WORLD.height];
+  const blocks = [];
+  for (let i = 0; i < xs.length - 1; i += 1) {
+    for (let j = 0; j < ys.length - 1; j += 1) {
+      const x0 = xs[i] + WORLD.roadWidth / 2;
+      const x1 = xs[i + 1] - WORLD.roadWidth / 2;
+      const y0 = ys[j] + WORLD.roadWidth / 2;
+      const y1 = ys[j + 1] - WORLD.roadWidth / 2;
+      if (x1 - x0 > 40 && y1 - y0 > 40) blocks.push({ x0, y0, x1, y1 });
+    }
+  }
+  return blocks;
+}
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function insideLandmark(x, y, w, h) {
+  const p = LANDMARKS.plaza;
+  if (x + w > p.x - p.w / 2 && x < p.x + p.w / 2 && y + h > p.y - p.h / 2 && y < p.y + p.h / 2) return true;
+  const k = LANDMARKS.park;
+  if (x + w > k.x - k.w / 2 && x < k.x + k.w / 2 && y + h > k.y - k.h / 2 && y < k.y + k.h / 2) return true;
+  return false;
+}
+
+export function buildCity(seed) {
+  const rng = makeRng(seed);
+  const buildings = [];
+  const trees = [];
+  const props = [];
+  const blocks = blockRects();
+
+  for (const block of blocks) {
+    const bw = block.x1 - block.x0;
+    const bh = block.y1 - block.y0;
+    // A plaza or a park takes the whole block: no buildings, just open ground.
+    if (insideLandmark(block.x0 + bw / 2, block.y0 + bh / 2, 0, 0)) {
+      if (block.x0 > LANDMARKS.park.x - LANDMARKS.park.w / 2 - 10) {
+        for (let i = 0; i < 26; i += 1) {
+          trees.push({ x: rngRange(rng, block.x0 + 14, block.x1 - 14), y: rngRange(rng, block.y0 + 14, block.y1 - 14), r: rngRange(rng, 9, 16) });
+        }
+      }
+      continue;
+    }
+    const count = rngInt(rng, 1, 3);
+    for (let n = 0; n < count; n += 1) {
+      const w = rngRange(rng, 70, Math.min(170, bw - 30));
+      const h = rngRange(rng, 60, Math.min(150, bh - 30));
+      const x = rngRange(rng, block.x0 + 8, block.x1 - w - 8);
+      const y = rngRange(rng, block.y0 + 8, block.y1 - h - 8);
+      const b = { x, y, w, h, color: rngPick(rng, BUILDING_PALETTE), roof: rngPick(rng, ROOF_PALETTE), tall: rngChance(rng, 0.3) };
+      if (buildings.some((o) => rectsOverlap(b, o))) continue;
+      buildings.push(b);
+    }
+    // A few trees in the gaps of every block.
+    for (let i = 0; i < 5; i += 1) {
+      const tx = rngRange(rng, block.x0 + 10, block.x1 - 10);
+      const ty = rngRange(rng, block.y0 + 10, block.y1 - 10);
+      if (buildings.some((b) => tx > b.x - 14 && tx < b.x + b.w + 14 && ty > b.y - 14 && ty < b.y + b.h + 14)) continue;
+      trees.push({ x: tx, y: ty, r: rngRange(rng, 7, 13) });
+    }
+    // Street furniture: benches and planters near the block corners.
+    if (rngChance(rng, 0.5)) props.push({ kind: 'bench', x: block.x0 + 18, y: block.y0 + 18 });
+    if (rngChance(rng, 0.4)) props.push({ kind: 'planter', x: block.x1 - 22, y: block.y1 - 22 });
+  }
+
+  // Palm trees along the beach, in a loose line down the sand.
+  for (let y = 60; y < WORLD.height - 40; y += rngRange(rng, 70, 130)) {
+    trees.push({ x: rngRange(rng, 232, 282), y, r: rngRange(rng, 9, 14), palm: true });
+  }
+  // Traffic lights at every intersection, cycling on a shared clock.
+  const lights = [];
+  for (const rx of WORLD.roadsX) {
+    for (const ry of WORLD.roadsY) {
+      lights.push({ x: rx, y: ry, phase: rngRange(rng, 0, 8) });
+    }
+  }
+  return { seed, buildings, trees, props, lights, blocks, districts: DISTRICTS };
+}
+
+// --- Queries the rest of the game asks about the city ---
+
+// True when the point is on a road, on the beach, in the park or on the plaza: open
+// ground where a person can walk and a car can drive.
+export function isOpenGround(city, x, y) {
+  if (x < WORLD.beachEdge || x > WORLD.width || y < 0 || y > WORLD.height) return false;
+  if (roadAt(x, y)) return true;
+  if (x < WORLD.beachEdge + 90) return true;
+  return false;
+}
+
+// Push a circle out of every building it overlaps. Returns true when it hit one.
+export function collideBuildings(city, circle) {
+  let hit = false;
+  for (const b of city.buildings) {
+    const cx = Math.max(b.x, Math.min(circle.x, b.x + b.w));
+    const cy = Math.max(b.y, Math.min(circle.y, b.y + b.h));
+    const dx = circle.x - cx;
+    const dy = circle.y - cy;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < circle.r * circle.r) {
+      hit = true;
+      if (d2 > 0.01) {
+        const d = Math.sqrt(d2);
+        circle.x = cx + (dx / d) * circle.r;
+        circle.y = cy + (dy / d) * circle.r;
+      } else {
+        circle.x = b.x - circle.r;
+      }
+    }
+  }
+  return hit;
+}
+
+export function pointInBuilding(city, x, y) {
+  for (const b of city.buildings) {
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return true;
+  }
+  return false;
 }
 
 export function districtAt(x, y) {
   for (const d of DISTRICTS) {
-    if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d;
+    if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d.name;
   }
-  return DISTRICTS[0];
+  return 'Solmara';
 }
 
-export function createCity(seed) {
-  const rng = createRandom(seed);
-  const streets = streetPositions();
-  const half = ROAD_W / 2;
-  const buildings = [];
-  const trees = [];
-  const lamps = [];
-  const benches = [];
-
-  const park = { x0: 2250, y0: 2250, x1: 2550, y1: 2550 };
-  const plaza = { x0: 2250, y0: 2650, x1: 2550, y1: 2950 };
-  const inPark = (x0, y0, x1, y1) => x0 < park.x1 && x1 > park.x0 && y0 < park.y1 && y1 > park.y0;
-  const inPlaza = (x0, y0, x1, y1) => x0 < plaza.x1 && x1 > plaza.x0 && y0 < plaza.y1 && y1 > plaza.y0;
-
-  const palettes = {
-    Marina: ['#e8d9b0', '#f2e6c9', '#cfe3e8', '#e8b48a'],
-    'Old Town': ['#d9a066', '#c98f5f', '#e0b183', '#b87a4a'],
-    Harbor: ['#8a97a3', '#6e7d8c', '#a3aeb8', '#5d6d7e'],
-    Hills: ['#e6dcc3', '#d5c9a8', '#f0e8d5', '#cbb98f'],
-    'Central Park': ['#7fae6a'],
-  };
-
-  for (let si = 0; si < streets.length; si += 1) {
-    for (let sj = 0; sj < streets.length; sj += 1) {
-      const bx0 = streets[si] + half + 14;
-      const by0 = streets[sj] + half + 14;
-      const bx1 = (si + 1 < streets.length ? streets[si + 1] : WORLD) - half - 14;
-      const by1 = (sj + 1 < streets.length ? streets[sj + 1] : WORLD) - half - 14;
-      if (bx1 - bx0 < 90 || by1 - by0 < 90) continue;
-      if (inPark(bx0, by0, bx1, by1) || inPlaza(bx0, by0, bx1, by1)) {
-        for (let t = 0; t < 14; t += 1) {
-          trees.push({ x: rng.range(bx0 + 20, bx1 - 20), y: rng.range(by0 + 20, by1 - 20), r: rng.range(9, 15) });
-        }
-        continue;
-      }
-      const d = districtAt((bx0 + bx1) / 2, (by0 + by1) / 2);
-      const palette = palettes[d.name] || palettes.Hills;
-      const count = rng.int(2, 4);
-      for (let b = 0; b < count; b += 1) {
-        const w = rng.range(70, 150);
-        const h = rng.range(70, 150);
-        const x = rng.range(bx0, Math.max(bx0, bx1 - w));
-        const y = rng.range(by0, Math.max(by0, by1 - h));
-        buildings.push({
-          x, y, w, h,
-          color: rng.pick(palette),
-          roof: rng.pick(['#7a5a3a', '#5a6b7c', '#8a6d4b', '#4a4a4a']),
-          height: rng.int(1, 4),
-          district: d.name,
-        });
-      }
-      const treeCount = rng.int(2, 6);
-      for (let t = 0; t < treeCount; t += 1) {
-        trees.push({ x: rng.range(bx0, bx1), y: rng.range(by0, by1), r: rng.range(8, 14) });
-      }
-    }
+// A random point on a road, for spawning traffic and parked cars.
+export function randomRoadPoint(rng) {
+  if (rng() < 0.5) {
+    const x = rngPick(rng, WORLD.roadsX);
+    return { x: x + rngRange(rng, -24, 24), y: rngRange(rng, 60, WORLD.height - 60) };
   }
+  const y = rngPick(rng, WORLD.roadsY);
+  return { x: rngRange(rng, 340, WORLD.width - 60), y: y + rngRange(rng, -24, 24) };
+}
 
-  // Street lamps along every street, benches in the park and plaza.
-  for (const s of streets) {
-    for (let p = FIRST_STREET; p < WORLD; p += STREET_GAP) {
-      lamps.push({ x: s + half + 8, y: p });
-      lamps.push({ x: s - half - 8, y: p + STREET_GAP / 2 });
-    }
+// The nearest point on any road centre line to (x, y): where a lost car rejoins the road.
+export function nearestRoadPoint(x, y) {
+  let best = null;
+  let bestD = Infinity;
+  for (const rx of WORLD.roadsX) {
+    const d = Math.abs(x - rx);
+    if (d < bestD) { bestD = d; best = { x: rx, y }; }
   }
-  for (let i = 0; i < 10; i += 1) {
-    benches.push({ x: rng.range(2280, 2520), y: rng.range(2280, 2520), angle: rng.range(0, Math.PI) });
-    benches.push({ x: rng.range(2280, 2520), y: rng.range(2680, 2920), angle: rng.range(0, Math.PI) });
+  for (const ry of WORLD.roadsY) {
+    const d = Math.abs(y - ry);
+    if (d < bestD) { bestD = d; best = { x, y: ry }; }
   }
+  return best;
+}
 
-  function nearestStreet(v) {
-    let best = streets[0];
-    let bd = Math.abs(v - best);
-    for (const s of streets) {
-      const d = Math.abs(v - s);
-      if (d < bd) { bd = d; best = s; }
-    }
-    return { pos: best, dist: bd };
-  }
-
-  function onRoad(x, y) {
-    return nearestStreet(x).dist < half || nearestStreet(y).dist < half;
-  }
-
-  function roadPoint(rnd) {
-    const vertical = rnd.chance(0.5);
-    const street = rnd.pick(streets);
-    const along = rnd.range(120, WORLD - 120);
-    return vertical ? { x: street, y: along } : { x: along, y: street };
-  }
-
-  function sidewalkPoint(rnd) {
-    const p = roadPoint(rnd);
-    const off = half + 18;
-    if (rnd.chance(0.5)) p.x += rnd.chance(0.5) ? off : -off;
-    else p.y += rnd.chance(0.5) ? off : -off;
-    return p;
-  }
-
-  function buildingHit(x, y, pad) {
-    for (const b of buildings) {
-      if (x > b.x - pad && x < b.x + b.w + pad && y > b.y - pad && y < b.y + b.h + pad) return b;
-    }
-    return null;
-  }
-
-  function pushOutOfBuildings(ent, radius) {
-    const b = buildingHit(ent.x, ent.y, radius);
-    if (!b) return false;
-    const left = ent.x - (b.x - radius);
-    const right = b.x + b.w + radius - ent.x;
-    const top = ent.y - (b.y - radius);
-    const bottom = b.y + b.h + radius - ent.y;
-    const m = Math.min(left, right, top, bottom);
-    if (m === left) ent.x = b.x - radius;
-    else if (m === right) ent.x = b.x + b.w + radius;
-    else if (m === top) ent.y = b.y - radius;
-    else ent.y = b.y + b.h + radius;
-    return true;
-  }
-
-  return {
-    seed, streets, buildings, trees, lamps, benches, park, plaza,
-    nearestStreet, onRoad, roadPoint, sidewalkPoint, buildingHit, pushOutOfBuildings,
-  };
+// Is the light green for traffic travelling along `axis` ('x' or 'y') at this moment?
+export function lightGreenFor(light, axis, time) {
+  const cycle = (time + light.phase) % 8;
+  return axis === 'x' ? cycle < 4 : cycle >= 4;
 }

@@ -1,86 +1,101 @@
-// Keyboard and pointer input for Solmara. Held keys steer and drive; one-shot
-// presses (enter car, punch, shoot, pause, menus) are queued as flags and taken
-// once by the loop, so a press between frames is never lost or counted twice.
-export const ACT_ENTER = 1;
-export const ACT_PUNCH = 2;
-export const ACT_SHOOT = 4;
-export const ACT_PAUSE = 8;
-export const ACT_CONFIRM = 16;
-export const ACT_SAVE = 32;
-export const ACT_LOAD = 64;
-export const ACT_MISSION = 128;
-export const ACT_REPAIR = 256;
-export const ACT_REPAINT = 512;
+// Solmara — keyboard input.
+// One object holds every key the game cares about, with two views of each: `down` (held
+// right now, for movement and driving) and `pressed` (went down since the last frame,
+// for one-shot actions like entering a car or punching). The game clears `pressed` once
+// a frame, so a held key never fires its action twice.
 
-const UP = new Set(['ArrowUp', 'KeyW']);
-const DOWN = new Set(['ArrowDown', 'KeyS']);
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const RUN = new Set(['ShiftLeft', 'ShiftRight']);
+const KEYS = {
+  up: ['KeyW', 'ArrowUp'],
+  down: ['KeyS', 'ArrowDown'],
+  left: ['KeyA', 'ArrowLeft'],
+  right: ['KeyD', 'ArrowRight'],
+  run: ['ShiftLeft', 'ShiftRight'],
+  enterCar: ['KeyE'],
+  punch: ['KeyJ'],
+  shoot: ['KeyK'],
+  jobs: ['KeyM'],
+  pause: ['KeyP', 'Escape'],
+  save: ['KeyQ'],
+  load: ['KeyL'],
+  confirm: ['Enter', 'Space'],
+  repair: ['KeyR'],
+  repaint: ['KeyC'],
+};
 
-export function createInput(canvas) {
+export function createInput() {
   const held = new Set();
-  let actions = 0;
-  let mouse = { x: 0, y: 0, down: false };
+  const pressed = new Set();
+  let anyKey = false;
+  let firstKeyAt = 0;
 
-  function codeAction(code) {
-    if (code === 'KeyE') return ACT_ENTER;
-    if (code === 'KeyJ') return ACT_PUNCH;
-    if (code === 'KeyK') return ACT_SHOOT;
-    if (code === 'Escape' || code === 'KeyP') return ACT_PAUSE;
-    if (code === 'Enter' || code === 'Space') return ACT_CONFIRM;
-    if (code === 'KeyQ') return ACT_SAVE;
-    if (code === 'KeyL') return ACT_LOAD;
-    if (code === 'KeyM') return ACT_MISSION;
-    if (code === 'KeyR') return ACT_REPAIR;
-    if (code === 'KeyC') return ACT_REPAINT;
-    return 0;
+  function codeOf(event) {
+    return event.code;
   }
 
-  window.addEventListener('keydown', (event) => {
-    held.add(event.code);
-    const act = codeAction(event.code);
-    if (act && !event.repeat) actions |= act;
-    if (UP.has(event.code) || DOWN.has(event.code) || LEFT.has(event.code) || RIGHT.has(event.code) || event.code === 'Space') {
+  function onKeyDown(event) {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) {
       event.preventDefault();
     }
-  });
-  window.addEventListener('keyup', (event) => held.delete(event.code));
-  window.addEventListener('blur', () => held.clear());
+    if (!held.has(event.code)) pressed.add(event.code);
+    held.add(event.code);
+    anyKey = true;
+    if (!firstKeyAt) firstKeyAt = performance.now();
+  }
 
-  canvas.addEventListener('pointermove', (event) => {
-    const r = canvas.getBoundingClientRect();
-    mouse = { x: event.clientX - r.left, y: event.clientY - r.top, down: mouse.down };
-  });
-  canvas.addEventListener('pointerdown', (event) => {
-    mouse.down = true;
-    actions |= ACT_PUNCH;
-  });
-  canvas.addEventListener('pointerup', () => { mouse.down = false; });
+  function onKeyUp(event) {
+    held.delete(event.code);
+  }
 
-  const has = (set) => {
-    for (const c of set) if (held.has(c)) return true;
-    return false;
-  };
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
 
   return {
-    up: () => has(UP),
-    down: () => has(DOWN),
-    left: () => has(LEFT),
-    right: () => has(RIGHT),
-    run: () => has(RUN),
-    // Steering: -1 left, 1 right. Throttle: -1 brake/reverse, 1 accelerate.
-    steer: () => (has(RIGHT) ? 1 : 0) - (has(LEFT) ? 1 : 0),
-    throttle: () => (has(UP) ? 1 : 0) - (has(DOWN) ? 1 : 0),
-    mouse: () => mouse,
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
+    // Held right now?
+    is(action) {
+      return KEYS[action].some((code) => held.has(code));
     },
-    // Test/autopilot hook: queue an action without a real key press.
-    queue(action) { actions |= action; },
-    press(code) { held.add(code); },
-    release(code) { held.delete(code); },
+    // Went down since the last frame? (cleared by endFrame)
+    wasPressed(action) {
+      return KEYS[action].some((code) => pressed.has(code));
+    },
+    // Any key at all, for "press any key" screens.
+    get anyKey() {
+      return anyKey;
+    },
+    get firstKeyAt() {
+      return firstKeyAt;
+    },
+    endFrame() {
+      pressed.clear();
+      anyKey = false;
+    },
+    // For the shot scenes and tests: pretend a key is held.
+    press(code) {
+      if (!held.has(code)) pressed.add(code);
+      held.add(code);
+    },
+    release(code) {
+      held.delete(code);
+    },
+    destroy() {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    },
   };
+}
+
+// The movement stick as a unit vector, from whatever keys are held: WASD or arrows,
+// normalised so a diagonal is no faster than straight ahead.
+export function moveVector(input) {
+  let x = 0;
+  let y = 0;
+  if (input.is('left')) x -= 1;
+  if (input.is('right')) x += 1;
+  if (input.is('up')) y -= 1;
+  if (input.is('down')) y += 1;
+  if (x !== 0 && y !== 0) {
+    x *= Math.SQRT1_2;
+    y *= Math.SQRT1_2;
+  }
+  return { x, y };
 }
