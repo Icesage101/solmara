@@ -1,203 +1,129 @@
-// Solmara — combat: fists, the pistol, and the people who fight back.
-// Punching is a short arc in front of Mara. The pistol fires a fast bullet toward the
-// nearest threat, or the way Mara is facing. Thugs are the mission-4 crew: they chase
-// Mara on foot and swing when they get close. Officers can be fought too, but killing
-// one costs two stars.
+// combat.js — fists, the pistol, bullets and hurt. One job: violence and
+// its immediate effects (damage, knockback, muzzle flash, particles).
+// The police decide when to chase; this file only lands the blows.
 
-import { PLAYER, clamp, dist2 } from './config.js';
-import { rngRange, rngPick } from './random.js';
-import { knockPedestrianDown } from './pedestrians.js';
-import { addWanted } from './police.js';
+import { PLAYER } from './config.js';
+import { commitCrime } from './police.js';
+import { scarePeds } from './pedestrians.js';
+import { sfx } from './audio.js';
 
-let nextThugId = 1;
-
-export function makeThug(x, y, rng) {
-  return {
-    id: nextThugId,
-    x,
-    y,
-    angle: rngRange(rng, 0, Math.PI * 2),
-    speed: rngRange(rng, 150, 185),
-    health: 60,
-    punchCooldown: 0,
-    shirt: rngPick(rng, ['#3a3a3a', '#5a2a2a', '#2a4a5a']),
-    skin: rngPick(rng, ['#e8b88a', '#c98a5a', '#8a5a3a']),
-    down: false,
-    downTimer: 0,
-    flash: 0,
-  };
+export function burst(G, x, y, color, n, speed = 130) {
+  for (let i = 0; i < n; i++) {
+    const a = G.rng() * Math.PI * 2;
+    const s = speed * (0.3 + G.rng() * 0.7);
+    G.particles.push({
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      life: 0.35 + G.rng() * 0.4, maxLife: 0.7, color,
+      size: 2 + G.rng() * 3,
+    });
+  }
 }
 
-export function makeBullet(x, y, angle) {
-  return {
-    x,
-    y,
-    vx: Math.cos(angle) * PLAYER.bulletSpeed,
-    vy: Math.sin(angle) * PLAYER.bulletSpeed,
-    life: PLAYER.pistolRange / PLAYER.bulletSpeed,
-  };
+export function hurtPed(G, ped, dmg, angle) {
+  ped.hp -= dmg;
+  ped.x += Math.cos(angle) * 9;
+  ped.y += Math.sin(angle) * 9;
+  burst(G, ped.x, ped.y, '#c23b2e', 5, 90);
+  if (ped.hp <= 0 && ped.state !== 'down') {
+    ped.state = 'down';
+    ped.timer = 6;
+    if (ped.kind === 'officer') commitCrime(G, 1.4, ped.x, ped.y);
+    else if (ped.kind === 'civil') commitCrime(G, 0.8, ped.x, ped.y);
+  } else if (ped.kind === 'civil') {
+    ped.state = 'flee';
+    ped.fleeX = G.player.x; ped.fleeY = G.player.y; ped.timer = 2.2;
+  }
 }
 
-// Mara's punch: anything hostile or unlucky inside the arc takes damage and staggers.
-export function playerPunch(state) {
-  const p = state.player;
-  if (p.punchCooldown > 0) return;
-  p.punchCooldown = PLAYER.punchCooldown;
-  p.punchAnim = 0.18;
-  state.audio.punch();
-  const range = PLAYER.punchRange;
-  const arc = PLAYER.punchArc / 2;
-  const hit = (target, tx, ty) => {
-    const dx = tx - p.x;
-    const dy = ty - p.y;
-    const d = Math.hypot(dx, dy);
-    if (d > range + 12) return false;
-    let diff = Math.atan2(dy, dx) - p.angle;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    return Math.abs(diff) < arc;
-  };
-  for (const thug of state.thugs) {
-    if (thug.down) continue;
-    if (hit(thug, thug.x, thug.y)) damageThug(state, thug, PLAYER.punchDamage, p.angle);
-  }
-  for (const officer of state.officers) {
-    if (officer.down) continue;
-    if (hit(officer, officer.x, officer.y)) {
-      officer.health -= PLAYER.punchDamage;
-      officer.down = officer.health <= 0;
-      officer.downTimer = officer.down ? 999 : 0.6;
-      if (officer.down) addWanted(state, 2, 'An officer is down');
-      state.spawnParticles(officer.x, officer.y, 6, '#ffd27d');
-    }
-  }
-  for (const ped of state.peds) {
-    if (ped.down) continue;
-    if (hit(ped, ped.x, ped.y)) {
-      knockPedestrianDown(ped, 2.5);
-      addWanted(state, 1, 'Assault reported');
-      state.spawnParticles(ped.x, ped.y, 6, '#ffd27d');
+export function playerPunch(G) {
+  const p = G.player;
+  if (p.car || G.time - p.lastPunch < 0.32) return;
+  p.lastPunch = G.time;
+  sfx('punch');
+  for (const ped of G.peds) {
+    if (ped.state === 'down') continue;
+    const d = Math.hypot(ped.x - p.x, ped.y - p.y);
+    if (d < PLAYER.punchRange + 10) {
+      hurtPed(G, ped, PLAYER.punchDamage, Math.atan2(ped.y - p.y, ped.x - p.x));
+      commitCrime(G, 0.45, p.x, p.y);
     }
   }
 }
 
-export function damageThug(state, thug, amount, fromAngle) {
-  thug.health -= amount;
-  thug.flash = 0.12;
-  thug.x += Math.cos(fromAngle) * 14;
-  thug.y += Math.sin(fromAngle) * 14;
-  state.spawnParticles(thug.x, thug.y, 6, '#ffd27d');
-  if (thug.health <= 0 && !thug.down) {
-    thug.down = true;
-    thug.downTimer = 999;
-    const m = state.missions.active;
-    if (m && m.id === 4) m.thugsLeft -= 1;
-    state.audio.thugDown();
-  }
-}
-
-// Mara's pistol: one bullet toward the nearest thug or officer, or the way she faces.
-export function playerShoot(state) {
-  const p = state.player;
-  if (p.shootCooldown > 0 || p.car) return;
-  if (p.ammo <= 0) {
-    state.toast('Out of ammo. Find a gun shop? There is none. Punch harder.');
-    p.shootCooldown = 0.3;
-    return;
-  }
-  p.shootCooldown = 0.22;
+export function playerShoot(G, tx, ty) {
+  const p = G.player;
+  if (p.car || p.ammo <= 0 || G.time - p.lastShot < 0.19) return;
+  p.lastShot = G.time;
   p.ammo -= 1;
-  let angle = p.angle;
-  let best = null;
-  let bestD = 420 * 420;
-  for (const thug of state.thugs) {
-    if (thug.down) continue;
-    const d2 = dist2(p.x, p.y, thug.x, thug.y);
-    if (d2 < bestD) { bestD = d2; best = thug; }
-  }
-  for (const officer of state.officers) {
-    if (officer.down) continue;
-    const d2 = dist2(p.x, p.y, officer.x, officer.y);
-    if (d2 < bestD) { bestD = d2; best = officer; }
-  }
-  if (best) angle = Math.atan2(best.y - p.y, best.x - p.x);
-  const bx = p.x + Math.cos(angle) * 20;
-  const by = p.y + Math.sin(angle) * 20;
-  state.bullets.push(makeBullet(bx, by, angle));
-  state.spawnParticles(bx, by, 4, '#ffe9a8');
-  state.audio.gunshot();
-  state.shake = Math.max(state.shake, 2);
-  // The shot scares the street: peds nearby run.
-  state.scare = { x: p.x, y: p.y, radius: 260, ttl: 0.1 };
+  const a = Math.atan2(ty - p.y, tx - p.x);
+  p.angle = a;
+  G.bullets.push({ x: p.x + Math.cos(a) * 16, y: p.y + Math.sin(a) * 16, vx: Math.cos(a) * 760, vy: Math.sin(a) * 760, life: 0.55, from: 'player' });
+  burst(G, p.x + Math.cos(a) * 20, p.y + Math.sin(a) * 20, '#ffd34d', 3, 60);
+  sfx('shot');
+  scarePeds(G, p.x, p.y, 300);
+  commitCrime(G, 0.55, p.x, p.y);
 }
 
-// Move every bullet; a bullet that reaches a thug, an officer or a building stops.
-export function updateBullets(state, dt) {
-  for (const bullet of state.bullets) {
-    bullet.x += bullet.vx * dt;
-    bullet.y += bullet.vy * dt;
-    bullet.life -= dt;
-    let dead = bullet.life <= 0;
-    if (!dead) {
-      for (const thug of state.thugs) {
-        if (thug.down) continue;
-        if (dist2(bullet.x, bullet.y, thug.x, thug.y) < 16 * 16) {
-          damageThug(state, thug, PLAYER.pistolDamage, Math.atan2(bullet.vy, bullet.vx));
-          dead = true;
-          break;
-        }
-      }
-    }
-    if (!dead) {
-      for (const officer of state.officers) {
-        if (officer.down) continue;
-        if (dist2(bullet.x, bullet.y, officer.x, officer.y) < 16 * 16) {
-          officer.health -= PLAYER.pistolDamage;
-          officer.down = officer.health <= 0;
-          officer.downTimer = officer.down ? 999 : 0.6;
-          if (officer.down) addWanted(state, 2, 'An officer is down');
-          state.spawnParticles(officer.x, officer.y, 6, '#ffd27d');
-          dead = true;
-          break;
-        }
-      }
-    }
-    if (!dead && state.city) {
-      const b = state.city.buildings;
-      for (let i = 0; i < b.length; i += 1) {
-        if (bullet.x > b[i].x && bullet.x < b[i].x + b[i].w && bullet.y > b[i].y && bullet.y < b[i].y + b[i].h) {
-          state.spawnParticles(bullet.x, bullet.y, 3, '#c9c9c9');
-          dead = true;
-          break;
-        }
-      }
-    }
-    bullet.dead = dead;
-  }
-  state.bullets = state.bullets.filter((b) => !b.dead);
+export function hurtPlayer(G, dmg) {
+  G.player.hp -= dmg;
+  G.player.lastHurt = G.time;
+  G.shake = Math.min(9, G.shake + 2.5);
+  if (G.player.hp <= 0 && G.mode === 'playing') G.mode = 'wasted';
 }
 
-// One thug's step: chase Mara, swing when close enough to reach her.
-export function updateThug(state, thug, dt) {
-  if (thug.down) return;
-  if (thug.flash > 0) thug.flash -= dt;
-  const p = state.player;
-  const dx = p.x - thug.x;
-  const dy = p.y - thug.y;
-  const d = Math.hypot(dx, dy) || 1;
-  thug.angle = Math.atan2(dy, dx);
-  if (d > 26) {
-    const step = Math.min(thug.speed * dt, d - 20);
-    thug.x += (dx / d) * step;
-    thug.y += (dy / d) * step;
+function bulletHits(G, b) {
+  if (b.from === 'player') {
+    for (const ped of G.peds) {
+      if (ped.state !== 'down' && Math.hypot(ped.x - b.x, ped.y - b.y) < 13) {
+        hurtPed(G, ped, 40, Math.atan2(b.vy, b.vx));
+        return true;
+      }
+    }
+    for (const car of G.cars) {
+      if (car !== G.player.car && Math.abs(car.x - b.x) < 26 && Math.abs(car.y - b.y) < 16) {
+        car.hp -= 12;
+        burst(G, b.x, b.y, '#ffb84d', 4, 110);
+        return true;
+      }
+    }
+  } else if (Math.hypot(G.player.x - b.x, G.player.y - b.y) < 13 && !G.player.car) {
+    hurtPlayer(G, 9);
+    return true;
   }
-  thug.punchCooldown -= dt;
-  if (d < 30 && thug.punchCooldown <= 0) {
-    thug.punchCooldown = 0.85;
-    p.health -= 9;
-    state.shake = Math.max(state.shake, 4);
-    state.audio.punch();
-    state.spawnParticles(p.x, p.y, 5, '#ff9a9a');
-    if (p.health <= 0) state.wasted();
+  return false;
+}
+
+// Officers open fire at three stars and up when the player is on foot and
+// in the open; bullets fly, bodies fall, the player heals slowly when
+// nothing has hit them for a while.
+export function updateCombat(G, dt) {
+  for (const b of G.bullets) {
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+    if (bulletHits(G, b)) b.life = 0;
   }
+  G.bullets = G.bullets.filter((b) => b.life > 0);
+
+  if (G.wanted.stars >= 3 && !G.player.car) {
+    for (const ped of G.peds) {
+      if (ped.kind !== 'officer' || ped.state === 'down') continue;
+      const d = Math.hypot(ped.x - G.player.x, ped.y - G.player.y);
+      if (d < 300 && G.time - (ped.lastShot || 0) > 1.15) {
+        ped.lastShot = G.time;
+        const a = Math.atan2(G.player.y - ped.y, G.player.x - ped.x) + (G.rng() - 0.5) * 0.16;
+        G.bullets.push({ x: ped.x, y: ped.y, vx: Math.cos(a) * 640, vy: Math.sin(a) * 640, life: 0.5, from: 'officer' });
+        sfx('shot');
+      }
+    }
+  }
+  if (G.time - G.player.lastHurt > 6 && G.player.hp > 0) {
+    G.player.hp = Math.min(PLAYER.maxHp, G.player.hp + dt * 3.2);
+  }
+  for (const p of G.particles) {
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= 0.92; p.vy *= 0.92;
+    p.life -= dt;
+  }
+  G.particles = G.particles.filter((p) => p.life > 0);
 }

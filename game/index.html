@@ -5,28 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Solmara: Streets of the Sun</title>
 <style>
-  html, body {
-    margin: 0;
-    padding: 0;
-    height: 100%;
-    background: #10151c;
-    overflow: hidden;
-  }
-  #game {
-    display: block;
-    width: 100vw;
-    height: 100vh;
-    image-rendering: auto;
-    cursor: crosshair;
-  }
+  html, body { margin: 0; padding: 0; background: #0b0e14; height: 100%; }
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  #wrap { width: min(1280px, 100vw); }
+  canvas { display: block; width: 100%; height: auto; background: #33373d; border-radius: 6px; }
+  #hint { color: #8a93a3; font: 13px system-ui, sans-serif; text-align: center; padding: 8px 0 2px; }
+  #hint b { color: #ffd34d; font-weight: 600; }
 </style>
 </head>
 <body>
-<canvas id="game"></canvas>
+<div id="wrap">
+  <canvas id="game" width="1280" height="720"></canvas>
+  <div id="hint">Solmara: Streets of the Sun — an original open-world crime game. WASD to move, E for cars, Tab for jobs.</div>
+</div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>
-
-<!-- Solmara loads nothing but its own modules: ./src/main.js and the files it imports.
-     No network, no fonts, no images, no libraries. Open this file from any static
-     server (for example `node serve.ts` from the repository root) and play. -->

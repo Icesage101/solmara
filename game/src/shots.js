@@ -1,168 +1,105 @@
-// Solmara — the screenshot scenes behind ?shot=1..4.
-// Each scene builds the city from the fixed shot seed, places the people and cars by
-// hand at fixed coordinates, and sets the camera and the HUD exactly where the shot
-// needs them. Nothing is simulated forward and nothing reads the clock, so the same
-// URL always renders the same frame. Every scene is a real render of the game's own
-// code: the same world builder, the same cars, the same HUD the player sees.
-//
-//   ?shot=1  title screen over the Marina, traffic rolling past
-//   ?shot=2  a three-star chase: Mara in the gold Comet, cruisers behind, job banner up
-//   ?shot=3  the Informant job on foot at the plaza, crew closing in
-//   ?shot=4  a wide view of the city from a sedan, beach on the left
+// shots.js — the staged scenes behind the screenshots. Each scene is a
+// real state of the real game, built from the same seed every time and
+// stepped with fixed inputs, so ?shot=chase always renders the same
+// frame. One job: set the stage; main.js runs the simulation.
 
-import { GAME, LANDMARKS } from './config.js';
-import { buildCity } from './world.js';
-import { makeCar, spawnParkedCar, spawnTrafficCar } from './vehicles.js';
-import { makePedestrian } from './pedestrians.js';
-import { makeThug } from './combat.js';
-import { makeRng, rngRange } from './random.js';
+import { WORLD } from './config.js';
+import { makePed } from './pedestrians.js';
 import { startMission } from './missions.js';
 
-function baseState(state) {
-  state.city = buildCity(GAME.shotSeed);
-  state.rng = makeRng(GAME.shotSeed + 7);
-  state.cars = [];
-  state.peds = [];
-  state.thugs = [];
-  state.officers = [];
-  state.bullets = [];
-  state.particles = [];
-  state.skids = [];
-  state.wanted = 0;
-  state.clockMinutes = GAME.startTimeMinutes;
-  state.day = 1;
+// Snap the camera onto the player so a scene starts already framed; the
+// live follow camera takes it from there during the settle steps.
+function snapCam(G) {
+  G.cam.x = Math.max(0, Math.min(WORLD.w - G.view.w, G.player.x - G.view.w / 2));
+  G.cam.y = Math.max(0, Math.min(WORLD.h - G.view.h, G.player.y - G.view.h / 2));
 }
 
-function scatterTraffic(state, count, cx, cy, radius) {
-  for (let i = 0; i < count; i += 1) {
-    const car = spawnTrafficCar(state.city, state.rng);
-    car.x = cx + rngRange(state.rng, -radius, radius);
-    car.y = cy + rngRange(state.rng, -radius, radius);
-    state.cars.push(car);
+function placePlayerInCar(G, typeWanted) {
+  // find the nearest car of the wanted type, or any car, and seat Mara
+  let car = G.cars.find((c) => c.type === typeWanted && c.role === 'parked');
+  if (!car) car = G.cars.find((c) => c.role === 'parked');
+  car.role = 'player';
+  G.player.car = car;
+  G.player.x = car.x;
+  G.player.y = car.y;
+  return car;
+}
+
+function copBehind(G, car, back, side) {
+  const cop = G.cars.find((c) => c.role === 'traffic');
+  cop.role = 'police';
+  cop.type = 'police';
+  cop.color = '#20242c';
+  cop.x = car.x - Math.cos(car.angle) * back + side;
+  cop.y = car.y - Math.sin(car.angle) * back + Math.cos(car.angle) * side;
+  cop.angle = car.angle;
+  cop.speed = car.speed * 0.94;
+  return cop;
+}
+
+export function setupShot(G, name) {
+  const P = G.world.places;
+  G.mode = 'playing';
+  if (name === 'start') {
+    G.mode = 'title';
+    G.player.x = P.start.x;
+    G.player.y = P.start.y;
+    G.cam.x = G.player.x - G.view.w / 2;
+    G.cam.y = G.player.y - G.view.h / 2;
+  } else if (name === 'chase') {
+    const car = placePlayerInCar(G, 'sports');
+    car.x = P.diner.x - 816; car.y = 1099; // the coast road's eastbound lane, a clear straight
+    car.angle = 0; car.speed = 330;
+    G.player.x = car.x; G.player.y = car.y;
+    snapCam(G);
+    copBehind(G, car, 130, -34);
+    copBehind(G, car, 280, 42);
+    G.wanted.stars = 3;
+    startMission(G, G.defs[4]); // Sunset Getaway: objective + marker up
+    G.banner = null;
+  } else if (name === 'mission') {
+    G.player.x = P.garage.x + 250;
+    G.player.y = P.garage.y + 190;
+    G.player.cash = 640;
+    startMission(G, G.defs[3]); // The Informant
+    // jump straight to the fight stage with Sal squaring up
+    G.mission.stage = 1;
+    const sal = makePed(G.player.x + 66, G.player.y + 18, G.rng, 'target');
+    sal.hp = 90;
+    sal.state = 'fight';
+    G.peds.push(sal);
+    G.mission.targetPed = sal;
+    G.objective = G.defs[3].stages[1].label;
+    G.banner = null;
+    G.wanted.stars = 1;
+    G.wanted.spawnTimer = 999; // the star is up, but no cruiser arrives mid-scene
+    snapCam(G);
+  } else if (name === 'city') {
+    const car = placePlayerInCar(G, 'sedan');
+    car.x = P.start.x - 108; car.y = P.start.y - 300;
+    car.angle = Math.PI / 2; car.speed = 210;
+    G.player.x = car.x; G.player.y = car.y;
+    G.player.cash = 320;
+    startMission(G, G.defs[0]); // First Fare: marker across town
+    G.banner = null;
+    snapCam(G);
   }
 }
 
-function scatterPeds(state, count, cx, cy, radius) {
-  for (let i = 0; i < count; i += 1) {
-    const ped = makePedestrian(cx + rngRange(state.rng, -radius, radius), cy + rngRange(state.rng, -radius, radius), state.rng);
-    state.peds.push(ped);
+// Scripted inputs while a shot scene settles: chase and city roll
+// forward, the mission scene lets Sal close in, the title idles.
+export function shotInput(name) {
+  if (name === 'chase' || name === 'city') {
+    return { up: true, down: false, left: false, right: false, handbrake: false };
   }
+  return { up: false, down: false, left: false, right: false, handbrake: false };
 }
 
-// The title screen: the city alive behind the menu, Mara waiting by the pier.
-export function stageShot1(state) {
-  baseState(state);
-  state.screen = 'title';
-  state.player.x = 470;
-  state.player.y = 820;
-  state.player.angle = Math.PI / 2;
-  state.camera.x = 820;
-  state.camera.y = 640;
-  state.camera.zoom = 1;
-  scatterTraffic(state, 6, 820, 640, 420);
-  scatterPeds(state, 8, 820, 640, 380);
-  const parked = spawnParkedCar(state.city, state.rng, 'sedan');
-  parked.x = 560;
-  parked.y = 700;
-  state.cars.push(parked);
-}
+// How long each scene settles, in fixed 30/s steps, before its frame:
+// the chase and the city drive are timed so the player's car is still
+// mid-frame, mid-action, when the shot is taken.
+export const SHOT_STEPS = { start: 110, chase: 55, mission: 110, city: 60 };
 
-// The chase: Mara in the gold Comet at speed, two cruisers on her bumper, three
-// stars, the Sunset Getaway banner and the minimap all on screen.
-export function stageShot2(state) {
-  baseState(state);
-  state.screen = 'play';
-  state.player.cash = 1240;
-  state.player.health = 100;
-  state.player.ammo = 24;
-  const comet = makeCar('sports', 1620, 980, -Math.PI / 2, 'player');
-  comet.color = '#e8c820';
-  comet.speed = 430;
-  state.cars.push(comet);
-  state.player.car = comet;
-  state.player.x = comet.x;
-  state.player.y = comet.y;
-  const cruiser1 = makeCar('cruiser', 1620, 1120, -Math.PI / 2, 'police');
-  cruiser1.speed = 420;
-  const cruiser2 = makeCar('cruiser', 1660, 1180, -Math.PI / 2, 'police');
-  cruiser2.speed = 400;
-  state.cars.push(cruiser1, cruiser2);
-  state.policeCruisers = [cruiser1, cruiser2];
-  scatterTraffic(state, 5, 1620, 980, 420);
-  scatterPeds(state, 6, 1620, 980, 420);
-  startMission(state, 5);
-  state.camera.x = 1620;
-  state.camera.y = 980;
-  state.camera.zoom = 1;
-  state.toastText = '';
-}
-
-// The Informant job on foot at the plaza: Mara, three thugs closing in, a cruiser at
-// the corner, peds scattering.
-export function stageShot3(state) {
-  baseState(state);
-  state.screen = 'play';
-  state.player.cash = 640;
-  state.player.health = 61;
-  state.player.ammo = 24;
-  state.player.x = LANDMARKS.plaza.x + 40;
-  state.player.y = LANDMARKS.plaza.y + 30;
-  state.player.angle = -Math.PI / 2;
-  state.wanted = 1;
-  startMission(state, 4);
-  const m = state.missions.active;
-  m.step = 1;
-  m.objective = 'Deal with the crew (3 left)';
-  m.marker = null;
-  for (let i = 0; i < 3; i += 1) {
-    const thug = makeThug(LANDMARKS.plaza.x - 90 + i * 70, LANDMARKS.plaza.y - 90, state.rng);
-    thug.angle = Math.PI / 2;
-    state.thugs.push(thug);
-  }
-  m.thugsLeft = 3;
-  const cruiser = makeCar('cruiser', 1220, 980, Math.PI / 4, 'police');
-  state.cars.push(cruiser);
-  state.policeCruisers = [cruiser];
-  scatterTraffic(state, 4, LANDMARKS.plaza.x, LANDMARKS.plaza.y, 420);
-  scatterPeds(state, 7, LANDMARKS.plaza.x, LANDMARKS.plaza.y, 380);
-  state.camera.x = LANDMARKS.plaza.x;
-  state.camera.y = LANDMARKS.plaza.y;
-  state.camera.zoom = 1;
-  state.toastText = 'The informant is here. His crew is coming. Fight!';
-  state.toastUntil = 999999;
-}
-
-// The wide city view: a sedan rolling through the Marina with the beach, the blocks,
-// the traffic and the minimap all in frame.
-export function stageShot4(state) {
-  baseState(state);
-  state.screen = 'play';
-  state.player.cash = 320;
-  state.player.health = 100;
-  const sedan = makeCar('sedan', 1220, 1320, -Math.PI / 2, 'player');
-  sedan.color = '#3d6fb4';
-  sedan.speed = 380;
-  state.cars.push(sedan);
-  state.player.car = sedan;
-  state.player.x = sedan.x;
-  state.player.y = sedan.y;
-  state.wanted = 1;
-  scatterTraffic(state, 9, 1220, 1320, 560);
-  scatterPeds(state, 8, 1220, 1320, 520);
-  const parked = spawnParkedCar(state.city, state.rng, 'taxi');
-  parked.x = 820;
-  parked.y = 640;
-  state.cars.push(parked);
-  state.camera.x = 1220;
-  state.camera.y = 1320;
-  state.camera.zoom = 0.62;
-  state.toastText = '';
-}
-
-// Pick a scene by its ?shot= number (1 to 4; anything else is the title scene).
-export function stageShot(name, state) {
-  if (name === '2') stageShot2(state);
-  else if (name === '3') stageShot3(state);
-  else if (name === '4') stageShot4(state);
-  else stageShot1(state);
-}
+// The four scenes, in screenshot order: the cover is the title over the
+// live city, then the chase, the on-foot job, and the wide city drive.
+export const SHOT_NAMES = ['start', 'chase', 'mission', 'city'];

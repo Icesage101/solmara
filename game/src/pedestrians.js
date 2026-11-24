@@ -1,124 +1,92 @@
-// Solmara — pedestrians: the people on the sidewalks.
-// A pedestrian walks a sidewalk from waypoint to waypoint, pauses sometimes, and runs
-// when something scary happens nearby (a gunshot, a crash, a car on the pavement). They
-// are not traffic: they keep to the edges of the roads, cross at intersections, and
-// never walk through buildings.
+// pedestrians.js — the people of Solmara: they stroll the sidewalks,
+// cross at corners, run from gunfire and crashes, and fall when hurt.
+// One job: move the crowd. Police officers are spawned by police.js but
+// share this file's body plan and walking code.
 
-import { WORLD, clamp } from './config.js';
-import { rngRange, rngPick } from './random.js';
-import { pointInBuilding } from './world.js';
+import { TILE } from './config.js';
+import { randRange, pick } from './random.js';
 
-const SHIRTS = ['#c94f4f', '#4f7dc9', '#4fc98a', '#c9a44f', '#8a5fc9', '#c97d4f', '#4fc9c2', '#d8d8d8'];
-const SKINS = ['#e8b88a', '#c98a5a', '#8a5a3a', '#f0c8a0'];
+const SHIRTS = ['#d96f4e', '#4e7ad9', '#e3c84f', '#7ac74f', '#b45ed9', '#e8e4da', '#4fb8c7'];
 
 let nextPedId = 1;
 
-export function makePedestrian(x, y, rng) {
+export function makePed(x, y, rng, kind = 'civil') {
   return {
-    id: nextPedId,
-    x,
-    y,
-    angle: rngRange(rng, 0, Math.PI * 2),
-    speed: rngRange(rng, 42, 68),
-    shirt: rngPick(rng, SHIRTS),
-    skin: rngPick(rng, SKINS),
-    target: null,
-    pause: rngRange(rng, 0, 2),
-    fleeing: 0,
-    health: 40,
-    down: false,
-    downTimer: 0,
+    id: nextPedId++,
+    x, y, angle: randRange(rng, 0, Math.PI * 2),
+    speed: 0, hp: kind === 'officer' ? 70 : 40,
+    kind, // 'civil' | 'officer' | 'target'
+    state: 'walk', // 'walk' | 'flee' | 'down' | 'fight' | 'chase'
+    shirt: kind === 'officer' ? '#2c3e70' : pick(rng, SHIRTS),
+    tx: x, ty: y, // current walking target
+    fleeX: 0, fleeY: 0, timer: 0,
   };
 }
 
-export function spawnPedestrian(state, rng) {
-  // On a sidewalk: just off a road, on a block edge, not inside a building.
-  for (let tries = 0; tries < 10; tries += 1) {
-    const vertical = rng() < 0.5;
-    let x;
-    let y;
-    if (vertical) {
-      const rx = rngPick(rng, WORLD.roadsX);
-      x = rx + (rng() < 0.5 ? -62 : 62);
-      y = rngRange(rng, 80, WORLD.height - 80);
-    } else {
-      const ry = rngPick(rng, WORLD.roadsY);
-      x = rngRange(rng, 360, WORLD.width - 80);
-      y = ry + (rng() < 0.5 ? -62 : 62);
+// Sidewalks are the rims of the buildable block squares: a stroller picks
+// a corner-to-corner path along the rim of the block they are on.
+function nextStrollTarget(ped, rng) {
+  const bx = Math.floor(ped.x / TILE.block) * TILE.block + TILE.road + 6;
+  const by = Math.floor(ped.y / TILE.block) * TILE.block + TILE.road + 6;
+  const inner = TILE.block - TILE.road - 12;
+  const side = Math.floor(rng() * 4);
+  const along = rng() * inner;
+  if (side === 0) { ped.tx = bx + along; ped.ty = by; }
+  else if (side === 1) { ped.tx = bx + inner; ped.ty = by + along; }
+  else if (side === 2) { ped.tx = bx + along; ped.ty = by + inner; }
+  else { ped.tx = bx; ped.ty = by + along; }
+}
+
+export function spawnPeds(world, rng, count) {
+  const peds = [];
+  for (let i = 0; i < count; i++) {
+    const block = pick(rng, world.blocks);
+    const ped = makePed(block.x + randRange(rng, 8, block.w - 8), block.y + randRange(rng, 8, block.h - 8), rng);
+    nextStrollTarget(ped, rng);
+    peds.push(ped);
+  }
+  return peds;
+}
+
+// A scare sends every civilian within earshot running from the spot.
+export function scarePeds(G, x, y, radius) {
+  for (const ped of G.peds) {
+    if (ped.kind !== 'civil' || ped.state === 'down') continue;
+    const d = Math.hypot(ped.x - x, ped.y - y);
+    if (d < radius) {
+      ped.state = 'flee';
+      ped.fleeX = x; ped.fleeY = y;
+      ped.timer = 2.4;
     }
-    if (x < WORLD.beachEdge + 12) continue;
-    if (pointInBuilding(state.city, x, y)) continue;
-    return makePedestrian(x, y, rng);
   }
-  return makePedestrian(900, 640, rng);
 }
 
-// Pick a new sidewalk waypoint near the pedestrian: along the same road, or across an
-// intersection to the next block.
-function pickWaypoint(state, ped, rng) {
-  const vertical = rng() < 0.5;
-  if (vertical) {
-    const rx = rngPick(rng, WORLD.roadsX);
-    return { x: rx + (ped.x < rx ? -62 : 62), y: clamp(ped.y + rngRange(rng, -320, 320), 70, WORLD.height - 70) };
-  }
-  const ry = rngPick(rng, WORLD.roadsY);
-  return { x: clamp(ped.x + rngRange(rng, -320, 320), 360, WORLD.width - 70), y: ry + (ped.y < ry ? -62 : 62) };
-}
-
-// One step for one pedestrian. `danger` is a point that just made a loud noise, or
-// null; `scareRadius` says how far the fear reaches.
-export function updatePedestrian(state, ped, dt, danger, scareRadius) {
-  if (ped.down) {
-    ped.downTimer -= dt;
-    if (ped.downTimer <= 0) ped.down = false;
-    return;
-  }
-  if (danger) {
-    const dx = ped.x - danger.x;
-    const dy = ped.y - danger.y;
-    const d2 = dx * dx + dy * dy;
-    if (d2 < scareRadius * scareRadius) ped.fleeing = 2.2;
-  }
-  if (ped.pause > 0) {
-    ped.pause -= dt;
-    return;
-  }
-  if (!ped.target || (Math.abs(ped.x - ped.target.x) < 8 && Math.abs(ped.y - ped.target.y) < 8)) {
-    if (state.rng() < 0.3) {
-      ped.pause = rngRange(state.rng, 1, 3);
-      return;
+export function updatePeds(G, dt) {
+  for (const ped of G.peds) {
+    if (ped.state === 'down') continue;
+    let speed = 62;
+    let tx = ped.tx;
+    let ty = ped.ty;
+    if (ped.state === 'flee') {
+      speed = 175;
+      tx = ped.x + (ped.x - ped.fleeX);
+      ty = ped.y + (ped.y - ped.fleeY);
+      ped.timer -= dt;
+      if (ped.timer <= 0) { ped.state = 'walk'; nextStrollTarget(ped, G.rng); }
+    } else if (ped.state === 'chase' || ped.state === 'fight') {
+      continue; // police.js and missions.js drive these bodies
     }
-    ped.target = pickWaypoint(state, ped, state.rng);
+    const dx = tx - ped.x;
+    const dy = ty - ped.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 6) {
+      if (ped.state === 'walk') nextStrollTarget(ped, G.rng);
+      ped.speed = 0;
+      continue;
+    }
+    ped.angle = Math.atan2(dy, dx);
+    ped.speed = speed;
+    ped.x += Math.cos(ped.angle) * speed * dt;
+    ped.y += Math.sin(ped.angle) * speed * dt;
   }
-  const speed = ped.fleeing > 0 ? 190 : ped.speed;
-  if (ped.fleeing > 0) ped.fleeing -= dt;
-  const dx = ped.target.x - ped.x;
-  const dy = ped.target.y - ped.y;
-  const d = Math.hypot(dx, dy) || 1;
-  // Fleeing means away from the danger, not toward the waypoint.
-  let mx = dx / d;
-  let my = dy / d;
-  if (ped.fleeing > 0 && danger) {
-    const fx = ped.x - danger.x;
-    const fy = ped.y - danger.y;
-    const fd = Math.hypot(fx, fy) || 1;
-    mx = fx / fd;
-    my = fy / fd;
-  }
-  ped.angle = Math.atan2(my, mx);
-  const nx = ped.x + mx * speed * dt;
-  const ny = ped.y + my * speed * dt;
-  if (!pointInBuilding(state.city, nx, ny)) {
-    ped.x = clamp(nx, WORLD.beachEdge + 8, WORLD.width - 8);
-    ped.y = clamp(ny, 8, WORLD.height - 8);
-  } else {
-    ped.target = pickWaypoint(state, ped, state.rng);
-  }
-}
-
-// Knock a pedestrian down (a car hit them, or a punch landed). They get up after a bit.
-export function knockPedestrianDown(ped, seconds) {
-  ped.down = true;
-  ped.downTimer = seconds;
-  ped.fleeing = 0;
 }

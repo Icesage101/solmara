@@ -1,158 +1,162 @@
-// Solmara — missions: the five story jobs.
-// A mission is a small state machine: a list of steps, each with a marker on the map
-// and a line of objective text. The game checks the step's condition every frame; when
-// it holds, the step advances, and when the steps run out the job pays. Failing a timed
-// job, or dying mid-job, fails the mission and Mara can take it again from the phone.
+// missions.js — Mara Voss's story: five jobs for the people of Solmara,
+// each a briefing, a chain of stages, a marker on the map and a cash
+// reward. One job: run the mission state machine. Driving, fighting and
+// the law live in their own files; this file only says what to do next.
 
-import { MISSIONS, LANDMARKS, WORLD, dist2 } from './config.js';
-import { addWanted, clearWanted } from './police.js';
-import { makeCar, spawnParkedCar } from './vehicles.js';
-import { makeThug } from './combat.js';
+import { commitCrime } from './police.js';
+import { makeCar } from './vehicles.js';
+import { makePed } from './pedestrians.js';
+import { sfx } from './audio.js';
 
-export function missionDef(id) {
-  return MISSIONS.find((m) => m.id === id);
+export function missionDefs(world) {
+  const P = world.places;
+  return [
+    {
+      id: 'fare', title: 'First Fare', giver: 'Old Rosa', reward: 200,
+      brief: 'Rosa runs the Sunspill Diner in the Marina. Her nephew is stranded at the Old Town garage and the buses are on strike. Pick him up and bring him home before his shift starts.',
+      stages: [
+        { type: 'driveTo', x: P.garage.x, y: P.garage.y, label: 'Pick up Rosa\'s nephew at the Old Town garage', time: 150 },
+        { type: 'driveTo', x: P.diner.x, y: P.diner.y, label: 'Drop him at the Sunspill Diner in the Marina', time: 150 },
+      ],
+    },
+    {
+      id: 'wheels', title: 'Borrowed Wheels', giver: 'Dex', reward: 350,
+      brief: 'Dex the fixer needs a Vireo GT, the red one parked by the Hills lookout, and he needs it quiet. Take the car, shake any heat, and park it at Mara\'s safehouse.',
+      stages: [
+        { type: 'steal', x: P.lookout.x, y: P.lookout.y, carType: 'sports', label: 'Steal the Vireo GT at the Hills lookout' },
+        { type: 'escape', x: P.safehouse.x, y: P.safehouse.y, label: 'Lose the heat and park at the safehouse', needCalm: true },
+      ],
+    },
+    {
+      id: 'harbor', title: 'Harbor Run', giver: 'Captain Ibe', reward: 450,
+      brief: 'A crate of medicine has to cross the city from Pier 9 to the Hills clinic, and the tide clock is running. Drive it fast, drive it whole, and do not stop for anyone.',
+      stages: [
+        { type: 'driveTo', x: P.dock.x, y: P.dock.y, label: 'Collect the crate at Pier 9 in the Harbor', time: 120 },
+        { type: 'driveTo', x: P.lookout.x, y: P.lookout.y, label: 'Deliver to the Hills clinic, fast', time: 110 },
+      ],
+    },
+    {
+      id: 'informant', title: 'The Informant', giver: 'Dex', reward: 550,
+      brief: 'A police informant named Sal is selling names at the Old Town plaza. Follow him on foot, keep your distance, and when he meets his handler, make sure Sal never talks again.',
+      stages: [
+        { type: 'walkTo', x: P.garage.x + 260, y: P.garage.y + 200, label: 'Find Sal near the Old Town plaza' },
+        { type: 'fight', x: P.garage.x + 300, y: P.garage.y + 240, label: 'Silence Sal the informant' },
+      ],
+    },
+    {
+      id: 'getaway', title: 'Sunset Getaway', giver: 'Mara herself', reward: 800,
+      brief: 'One last score. The Marina bank job went loud and every cruiser in Solmara is awake. Three stars, one car, one safehouse. Drive like the sun is going down on all of it.',
+      stages: [
+        { type: 'escape', x: P.safehouse.x, y: P.safehouse.y, label: 'Reach the safehouse with the city watching', stars: 3 },
+      ],
+    },
+  ];
 }
 
-export function createMissionState() {
-  return {
-    active: null,
-    completed: [],
-    failed: null,
+export function startMission(G, def) {
+  G.mission = {
+    def, stage: 0, state: 'run', timer: def.stages[0].time || 0,
+    targetCar: null, targetPed: null,
   };
+  G.banner = { title: def.title, text: def.brief, until: G.time + 6 };
+  setupStage(G);
+  sfx('win');
 }
 
-// Start a job: set up its first step and whatever the step needs in the world (a
-// target car, a timer, a crew of thugs). Returns false when the job is already done.
-export function startMission(state, id) {
-  const def = missionDef(id);
-  if (!def) return false;
-  if (state.missions.completed.includes(id)) {
-    state.toast('That job is already done.');
-    return false;
-  }
-  const m = { id, def, step: 0, timer: 0, targetCar: null, thugsLeft: 0, startedAt: state.time };
-  state.missions.active = m;
-  state.missions.failed = null;
-  if (id === 1) {
-    m.marker = { x: LANDMARKS.marinaPier.x, y: LANDMARKS.marinaPier.y, label: 'Pickup: Marina Pier' };
-    m.objective = 'Pick up the parcel at Marina Pier';
-  } else if (id === 2) {
-    const car = spawnParkedCar(state.city, state.rng, 'sports');
-    car.x = 1620;
-    car.y = 1150;
-    car.angle = 0;
-    car.color = '#e8c820';
-    state.cars.push(car);
+function setupStage(G) {
+  const m = G.mission;
+  const stage = m.def.stages[m.stage];
+  m.timer = stage.time || 0;
+  m.targetCar = null;
+  m.targetPed = null;
+  if (stage.type === 'steal') {
+    const car = makeCar(stage.carType, stage.x + 30, stage.y + 10, 0, 'target', G.rng);
+    car.color = '#d8443c';
+    G.cars.push(car);
     m.targetCar = car;
-    m.marker = { x: car.x, y: car.y, label: 'The gold Comet' };
-    m.objective = 'Steal the gold Comet by the plaza';
-  } else if (id === 3) {
-    m.timer = 100;
-    m.marker = { x: LANDMARKS.harborDock.x, y: LANDMARKS.harborDock.y, label: 'Harbor Dock 7' };
-    m.objective = 'Deliver to Harbor Dock 7 — 100 seconds';
-  } else if (id === 4) {
-    m.marker = { x: LANDMARKS.plaza.x, y: LANDMARKS.plaza.y, label: 'Solmara Plaza' };
-    m.objective = 'Meet the informant at Solmara Plaza';
-  } else if (id === 5) {
-    addWanted(state, 3, 'The whole city is awake');
-    m.marker = { x: LANDMARKS.safehouse.x, y: LANDMARKS.safehouse.y, label: 'Safehouse' };
-    m.objective = 'Reach the safehouse, alive';
   }
-  state.toast(`Job started: ${def.name} — $${def.pay}`);
-  state.audio.missionStart();
-  return true;
+  if (stage.type === 'fight') {
+    const ped = makePed(stage.x, stage.y, G.rng, 'target');
+    ped.hp = 90;
+    ped.state = 'fight';
+    G.peds.push(ped);
+    m.targetPed = ped;
+  }
+  if (stage.type === 'escape' && stage.stars) {
+    G.wanted.stars = Math.max(G.wanted.stars, stage.stars);
+    commitCrime(G, 0.5, G.player.x, G.player.y);
+  }
+  G.objective = stage.label;
 }
 
-function completeMission(state) {
-  const m = state.missions.active;
-  if (!m) return;
-  state.player.cash += m.def.pay;
-  state.missions.completed.push(m.id);
-  state.missions.active = null;
-  state.missionCompleteAt = state.time;
-  state.screen = 'complete';
-  state.audio.missionComplete();
-  state.toast(`Job done: ${m.def.name} — +$${m.def.pay}`);
+function completeMission(G) {
+  const m = G.mission;
+  G.player.cash += m.def.reward;
+  G.progress.done = Math.max(G.progress.done, G.progress.unlocked);
+  G.progress.unlocked = Math.min(5, G.progress.unlocked + 1);
+  G.banner = { title: 'Mission complete', text: `${m.def.title} — $${m.def.reward} earned.`, until: G.time + 5 };
+  G.objective = '';
+  G.mission = null;
+  sfx('cash');
+  G.saveGame();
 }
 
-function failMission(state, reason) {
-  const m = state.missions.active;
-  if (!m) return;
-  state.missions.failed = { id: m.id, reason };
-  state.missions.active = null;
-  state.screen = 'failed';
-  state.audio.missionFail();
+function failMission(G, why) {
+  G.banner = { title: 'Mission failed', text: why, until: G.time + 5 };
+  G.objective = '';
+  G.mission = null;
+  sfx('fail');
 }
 
-// Check the active job's current step. Called every frame while a job is running.
-export function updateMission(state, dt) {
-  const m = state.missions.active;
+export function updateMission(G, dt) {
+  const m = G.mission;
   if (!m) return;
-  const p = state.player;
-
-  if (m.id === 1) {
-    if (m.step === 0) {
-      if (dist2(p.x, p.y, m.marker.x, m.marker.y) < 70 * 70) {
-        m.step = 1;
-        m.marker = { x: 1220, y: 640, label: 'Drop-off: Old Town' };
-        m.objective = 'Deliver the parcel to Old Town';
-        state.toast('Parcel collected. Deliver it to Old Town.');
-        state.audio.pickup();
-      }
-    } else if (dist2(p.x, p.y, m.marker.x, m.marker.y) < 70 * 70) {
-      completeMission(state);
-    }
-  } else if (m.id === 2) {
-    if (m.step === 0) {
-      if (p.car === m.targetCar) {
-        m.step = 1;
-        addWanted(state, 1, 'Car reported stolen');
-        m.marker = null;
-        m.objective = 'Lose the cops — get your wanted level to zero';
-        state.toast('It is yours now. Lose the heat.');
-      }
-    } else if (state.wanted === 0) {
-      completeMission(state);
-    }
-  } else if (m.id === 3) {
+  const stage = m.def.stages[m.stage];
+  if (stage.time) {
     m.timer -= dt;
-    m.objective = `Deliver to Harbor Dock 7 — ${Math.max(0, Math.ceil(m.timer))}s left`;
-    if (m.timer <= 0) {
-      failMission(state, 'The delivery window closed.');
-    } else if (dist2(p.x, p.y, m.marker.x, m.marker.y) < 80 * 80) {
-      completeMission(state);
-    }
-  } else if (m.id === 4) {
-    if (m.step === 0) {
-      if (dist2(p.x, p.y, m.marker.x, m.marker.y) < 90 * 90) {
-        m.step = 1;
-        m.objective = 'Deal with the crew';
-        state.toast('The informant is here. His crew is coming. Fight!');
-        state.audio.missionStart();
-        const plaza = LANDMARKS.plaza;
-        for (let i = 0; i < 3; i += 1) {
-          const thug = makeThug(plaza.x + (i - 1) * 70, plaza.y - 60, state.rng);
-          state.thugs.push(thug);
-        }
-        m.thugsLeft = 3;
-        m.marker = null;
+    if (m.timer <= 0) return failMission(G, 'Out of time. The job is off.');
+  }
+  const d = Math.hypot(G.player.x - stage.x, G.player.y - stage.y);
+  let done = false;
+  if (stage.type === 'driveTo') done = d < 62 && !!G.player.car;
+  else if (stage.type === 'walkTo') done = d < 46 && !G.player.car;
+  else if (stage.type === 'steal') done = G.player.car === m.targetCar;
+  else if (stage.type === 'fight') {
+    const ped = m.targetPed;
+    if (ped) {
+      // Sal fights back: he closes in and swings at Mara.
+      const pd = Math.hypot(ped.x - G.player.x, ped.y - G.player.y);
+      if (pd > 24) {
+        ped.angle = Math.atan2(G.player.y - ped.y, G.player.x - ped.x);
+        ped.x += Math.cos(ped.angle) * 120 * dt;
+        ped.y += Math.sin(ped.angle) * 120 * dt;
+      } else if (G.time - (ped.lastSwing || 0) > 0.9) {
+        ped.lastSwing = G.time;
+        G.player.hp -= 7;
+        G.player.lastHurt = G.time;
+        if (G.player.hp <= 0) G.mode = 'wasted';
       }
-    } else if (m.thugsLeft <= 0) {
-      completeMission(state);
+      done = ped.state === 'down';
     }
-  } else if (m.id === 5) {
-    if (dist2(p.x, p.y, m.marker.x, m.marker.y) < 80 * 80) {
-      clearWanted(state, 'Safe. The heat is off — for now.');
-      completeMission(state);
-    }
+  } else if (stage.type === 'escape') {
+    done = d < 70 && (!stage.needCalm || G.wanted.stars < 0.6);
+  }
+  if (stage.type === 'steal' && m.targetCar && m.targetCar.role === 'gone') {
+    return failMission(G, 'The car is wrecked. Dex is not pleased.');
+  }
+  if (!done) return;
+  m.stage += 1;
+  if (m.stage >= m.def.stages.length) completeMission(G);
+  else {
+    setupStage(G);
+    sfx('door');
   }
 }
 
-// The phone: the list of jobs Mara can take, with their state.
-export function missionList(state) {
-  return MISSIONS.map((def) => ({
-    def,
-    done: state.missions.completed.includes(def.id),
-    active: state.missions.active !== null && state.missions.active.id === def.id,
-  }));
+// Where the current stage wants the player, for the minimap and the
+// on-screen marker. Null when no mission is running.
+export function missionMarker(G) {
+  if (!G.mission) return null;
+  const stage = G.mission.def.stages[G.mission.stage];
+  return { x: stage.x, y: stage.y, label: stage.label };
 }

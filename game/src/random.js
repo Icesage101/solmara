@@ -1,44 +1,39 @@
-// Solmara — a tiny seeded random number generator.
-// The city, the traffic and the screenshot scenes all draw from this, never from
-// Math.random, so the same seed always builds the same Solmara. That is what makes the
-// ?shot= scenes deterministic: one seed, one frame, every load.
+// random.js — deterministic seeded randomness. The whole city, and every
+// staged screenshot scene, is built from one seed so the same seed always
+// produces the same Solmara. One job: be the only source of chance the
+// world generator and the shot scenes are allowed to use.
 
-// Mulberry32: small, fast, and good enough for scattering buildings and trees.
+// mulberry32: a small, fast, well-mixed 32-bit generator.
 export function makeRng(seed) {
   let a = seed >>> 0;
   return function next() {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-export function rngRange(rng, min, max) {
-  return min + rng() * (max - min);
+export function randRange(rng, lo, hi) {
+  return lo + rng() * (hi - lo);
 }
 
-export function rngInt(rng, min, max) {
-  return Math.floor(rngRange(rng, min, max + 1));
+export function randInt(rng, lo, hi) {
+  return Math.floor(randRange(rng, lo, hi + 1));
 }
 
-export function rngPick(rng, list) {
-  return list[Math.floor(rng() * list.length)];
+export function pick(rng, list) {
+  return list[Math.floor(rng() * list.length) % list.length];
 }
 
-export function rngChance(rng, p) {
-  return rng() < p;
-}
-
-// Shuffle a list in place with the seeded generator, so a shuffled deck of spawn
-// points or colours is the same every time the seed is the same.
-export function rngShuffle(rng, list) {
-  for (let i = list.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(rng() * (i + 1));
-    const tmp = list[i];
-    list[i] = list[j];
-    list[j] = tmp;
+// A stable numeric seed from a short string, so shot scenes can be named
+// (?shot=chase) and still seed the world deterministically.
+export function seedFromString(text) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
   }
-  return list;
+  return h >>> 0;
 }

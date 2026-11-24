@@ -1,1 +1,29 @@
-[{"name":"1-start.jpg","query":"?shot=1"},{"name":"2-chase.jpg","query":"?shot=2"},{"name":"3-mission.jpg","query":"?shot=3"},{"name":"4-city.jpg","query":"?shot=4"}]
+{
+  "comment": "Staged screenshot scenes for Solmara: Streets of the Sun. Each entry loads game/index.html with ?shot=<scene> at 1280x720; the scene is seeded and stepped deterministically by game/src/shots.js, so the same scene always renders the same frame.",
+  "shots": [
+    {
+      "file": "screenshots/1-start.jpg",
+      "scene": "start",
+      "shows": "Title screen over the live city: traffic and pedestrians moving behind the menu",
+      "url": "index.html?shot=start"
+    },
+    {
+      "file": "screenshots/2-chase.jpg",
+      "scene": "chase",
+      "shows": "Police chase at three wanted stars: cruisers behind the player's sports car, minimap and mission objective on the HUD",
+      "url": "index.html?shot=chase"
+    },
+    {
+      "file": "screenshots/3-mission.jpg",
+      "scene": "mission",
+      "shows": "On-foot mission moment: Mara facing the informant Sal in Old Town, pedestrians and traffic around, a wanted star up",
+      "url": "index.html?shot=mission"
+    },
+    {
+      "file": "screenshots/4-city.jpg",
+      "scene": "city",
+      "shows": "Wide city drive: Mara driving through the plaza district on a courier job, traffic, minimap and mission marker visible",
+      "url": "index.html?shot=city"
+    }
+  ]
+}
