@@ -1,53 +1,86 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// Keyboard and pointer input for Solmara. Held keys steer and drive; one-shot
+// presses (enter car, punch, shoot, pause, menus) are queued as flags and taken
+// once by the loop, so a press between frames is never lost or counted twice.
+export const ACT_ENTER = 1;
+export const ACT_PUNCH = 2;
+export const ACT_SHOOT = 4;
+export const ACT_PAUSE = 8;
+export const ACT_CONFIRM = 16;
+export const ACT_SAVE = 32;
+export const ACT_LOAD = 64;
+export const ACT_MISSION = 128;
+export const ACT_REPAIR = 256;
+export const ACT_REPAINT = 512;
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
-
+const UP = new Set(['ArrowUp', 'KeyW']);
+const DOWN = new Set(['ArrowDown', 'KeyS']);
 const LEFT = new Set(['ArrowLeft', 'KeyA']);
 const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+const RUN = new Set(['ShiftLeft', 'ShiftRight']);
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
+export function createInput(canvas) {
+  const held = new Set();
   let actions = 0;
+  let mouse = { x: 0, y: 0, down: false };
+
+  function codeAction(code) {
+    if (code === 'KeyE') return ACT_ENTER;
+    if (code === 'KeyJ') return ACT_PUNCH;
+    if (code === 'KeyK') return ACT_SHOOT;
+    if (code === 'Escape' || code === 'KeyP') return ACT_PAUSE;
+    if (code === 'Enter' || code === 'Space') return ACT_CONFIRM;
+    if (code === 'KeyQ') return ACT_SAVE;
+    if (code === 'KeyL') return ACT_LOAD;
+    if (code === 'KeyM') return ACT_MISSION;
+    if (code === 'KeyR') return ACT_REPAIR;
+    if (code === 'KeyC') return ACT_REPAINT;
+    return 0;
+  }
 
   window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
+    held.add(event.code);
+    const act = codeAction(event.code);
+    if (act && !event.repeat) actions |= act;
+    if (UP.has(event.code) || DOWN.has(event.code) || LEFT.has(event.code) || RIGHT.has(event.code) || event.code === 'Space') {
+      event.preventDefault();
+    }
   });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
+  window.addEventListener('keyup', (event) => held.delete(event.code));
+  window.addEventListener('blur', () => held.clear());
+
+  canvas.addEventListener('pointermove', (event) => {
+    const r = canvas.getBoundingClientRect();
+    mouse = { x: event.clientX - r.left, y: event.clientY - r.top, down: mouse.down };
   });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
+  canvas.addEventListener('pointerdown', (event) => {
+    mouse.down = true;
+    actions |= ACT_PUNCH;
   });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+  canvas.addEventListener('pointerup', () => { mouse.down = false; });
+
+  const has = (set) => {
+    for (const c of set) if (held.has(c)) return true;
+    return false;
+  };
 
   return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
-    },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
+    up: () => has(UP),
+    down: () => has(DOWN),
+    left: () => has(LEFT),
+    right: () => has(RIGHT),
+    run: () => has(RUN),
+    // Steering: -1 left, 1 right. Throttle: -1 brake/reverse, 1 accelerate.
+    steer: () => (has(RIGHT) ? 1 : 0) - (has(LEFT) ? 1 : 0),
+    throttle: () => (has(UP) ? 1 : 0) - (has(DOWN) ? 1 : 0),
+    mouse: () => mouse,
     takeActions() {
       const taken = actions;
       actions = 0;
       return taken;
     },
+    // Test/autopilot hook: queue an action without a real key press.
+    queue(action) { actions |= action; },
+    press(code) { held.add(code); },
+    release(code) { held.delete(code); },
   };
 }

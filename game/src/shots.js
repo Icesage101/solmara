@@ -1,79 +1,116 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// The screenshot scenes behind ?shot=start|chase|mission|city. Each one sets the
+// real game up in a fixed state, then plays the real rules forward for a fixed
+// number of steps with a small autopilot, so the frame is a moment of genuine
+// play and the same seed always gives the same frame.
+import { makeCar } from './vehicles.js';
+import { startMission } from './missions.js';
+import { tryPunch } from './combat.js';
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+const STEP = 1 / 60;
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
+function driveStraight(game, seconds, steerBias) {
+  const steps = Math.round(seconds / STEP);
+  for (let i = 0; i < steps; i += 1) {
+    const car = game.car;
+    let steer = 0;
+    if (car) {
+      // Stay on the street: steer back toward the road's centre line.
+      const street = game.city.nearestStreet(car.x);
+      const want = car.angle > 0 ? Math.PI / 2 : -Math.PI / 2;
+      const off = car.x - street.pos;
+      steer = Math.max(-1, Math.min(1, (want - car.angle) * 2 - off * 0.004 + (steerBias || 0)));
     }
+    game.step(STEP, { up: true, down: false, left: steer < -0.15, right: steer > 0.15, run: false });
   }
-  return Infinity;
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
+function walkForward(game, seconds) {
+  const steps = Math.round(seconds / STEP);
+  for (let i = 0; i < steps; i += 1) {
+    game.step(STEP, { up: true, down: false, left: false, right: false, run: false });
   }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
 }
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+function putPlayerInCar(game, type, x, y, angle, color, owned) {
+  const car = makeCar(type, x, y, angle, color);
+  if (owned) car.stolen = true; // Mara's own car: no theft, no heat.
+  game.cars.push(car);
+  game.enterCar(car);
+  return car;
+}
+
+export function stageShot(name, game) {
+  game.resetWorld();
+  if (name === 'chase') {
+    // Mission 5, the Sunset Getaway: Mara in a gold Comet, three stars, two
+    // cruisers on her tail, the safehouse marker on the map.
+    startMission(game, 4);
+    const car = putPlayerInCar(game, 'sports', 1500, 1900, Math.PI / 2, '#e6b800');
+    car.speed = 200;
+    game.player.cash = 1240;
+    // Clear the road ahead so the chase runs clean, and put two cruisers
+    // right on her tail instead of waiting for them to find her.
+    game.cars = game.cars.filter((c) => !(c.traffic && Math.abs(c.x - 1500) < 130 && c.y > 1100 && c.y < 3300));
+    game.police.spawnTimer = 999;
+    for (let i = 0; i < 2; i += 1) {
+      const cruiser = makeCar('police', 1500, 1720 - i * 90, Math.PI / 2, '#1d3a5f');
+      cruiser.police = true;
+      cruiser.speed = 320 + i * 10;
+      cruiser.sirenPhase = i * 2;
+      game.police.cruisers.push(cruiser);
+    }
+    driveStraight(game, 5, 0);
+    game.camera.x = game.player.x;
+    game.camera.y = game.player.y;
+    return { screen: 'play' };
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+  if (name === 'mission') {
+    // Mission 4, the Informant: Mara on foot at Solmara Plaza, the crew closing
+    // in, pedestrians scattering, traffic rolling past.
+    startMission(game, 3);
+    game.player.x = 2400;
+    game.player.y = 2920;
+    game.player.angle = -Math.PI / 2;
+    game.player.cash = 640;
+    // Walk up to the informant to trigger the crew, then stand and fight.
+    walkForward(game, 0.7);
+    const steps = Math.round(2.5 / STEP);
+    for (let i = 0; i < steps; i += 1) {
+      const thugNear = game.peds.some((p) => p.thug && p.state !== 'down' && Math.hypot(p.x - game.player.x, p.y - game.player.y) < 50);
+      if (thugNear) {
+        const thug = game.peds.find((p) => p.thug && p.state !== 'down');
+        if (thug) game.player.angle = Math.atan2(thug.y - game.player.y, thug.x - game.player.x);
+        tryPunch(game);
+      }
+      game.step(STEP, { up: false, down: false, left: false, right: false, run: false });
+    }
+    game.camera.x = game.player.x;
+    game.camera.y = game.player.y;
+    return { screen: 'play' };
   }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+  if (name === 'city') {
+    // A wide view from a moving car: Mara cruising the Marina boulevard with
+    // the sea on one side and the whole city opening up ahead.
+    const car = putPlayerInCar(game, 'sedan', 700, 1500, Math.PI / 2, '#2e5fa3', true);
+    car.speed = 170;
+    game.zoom = 0.62;
+    game.player.cash = 320;
+    driveStraight(game, 6, 0);
+    game.camera.x = game.player.x;
+    game.camera.y = game.player.y - 120;
+    return { screen: 'play' };
+  }
+  // start: the title screen over a living city, traffic rolling and people walking.
+  game.player.x = 700;
+  game.player.y = 900;
+  game.player.angle = Math.PI / 2;
+  game.camera.x = 1500;
+  game.camera.y = 1500;
+  const steps = Math.round(5 / STEP);
+  for (let i = 0; i < steps; i += 1) {
+    game.step(STEP, { up: false, down: false, left: false, right: false, run: false }, true);
+  }
+  game.camera.x = 1500;
+  game.camera.y = 1500;
+  return { screen: 'title' };
 }
