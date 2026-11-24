@@ -1,5 +1,9 @@
 # Solmara: Streets of the Sun
 
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/Icesage101/solmara/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/Icesage101/solmara/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+
 A 2D top-down open-world crime game that runs offline in a desktop browser from
 static files. No build step, no libraries, no network: plain ES modules under
 `game/src/`, drawn on one canvas, with sound synthesized live by WebAudio.
